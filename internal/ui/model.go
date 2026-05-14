@@ -15,6 +15,7 @@ type mode int
 const (
 	modeMain mode = iota
 	modeModal
+	modeLogModal
 )
 
 // tickInterval is the auto-refresh polling period for the main view.
@@ -30,6 +31,7 @@ type Model struct {
 	mode        mode
 	modalItems  []model.TaskBrief
 	modalCursor int
+	logScroll   int // top-of-window offset for the log modal
 	width       int
 	height      int
 	startupOpen bool
@@ -95,6 +97,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// Re-clamp the log modal's scroll offset against the new height.
+		// Without this, shrinking the terminal while the modal is open
+		// leaves logScroll pointing past maxLogScroll(), causing the body
+		// to render blank until the user presses j/k/G.
+		if m.mode == modeLogModal && m.logScroll > m.maxLogScroll() {
+			m.logScroll = m.maxLogScroll()
+		}
 		return m, nil
 
 	case loadedMsg:
@@ -118,7 +127,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		// Only reload task data when on the main view with an active task.
-		// Modal-open or no-task states only re-arm the ticker.
+		// Modal-open (task switch or log) and no-task states only re-arm
+		// the ticker so the user's scroll / selection is never disturbed.
 		if m.mode == modeMain && m.taskName != "" {
 			return m, tea.Batch(loadTaskCmd(m.root, m.taskName), tickCmd())
 		}
@@ -161,7 +171,35 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.taskName = sel.Name
 			m.mode = modeMain
 			m.loaded = false
+			m.logScroll = 0
 			return m, loadTaskCmd(m.root, m.taskName)
+		}
+		return m, nil
+
+	case modeLogModal:
+		switch msg.String() {
+		case "esc", "q":
+			m.mode = modeMain
+			return m, nil
+		case "ctrl+c":
+			return m, tea.Quit
+		case "j", "down":
+			max := m.maxLogScroll()
+			if m.logScroll < max {
+				m.logScroll++
+			}
+			return m, nil
+		case "k", "up":
+			if m.logScroll > 0 {
+				m.logScroll--
+			}
+			return m, nil
+		case "g", "home":
+			m.logScroll = 0
+			return m, nil
+		case "G", "end":
+			m.logScroll = m.maxLogScroll()
+			return m, nil
 		}
 		return m, nil
 
@@ -176,7 +214,27 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, loadTaskCmd(m.root, m.taskName)
 		case "t":
 			return m, loadModalCmd(m.root)
+		case "l", "L":
+			if m.taskName == "" {
+				return m, nil
+			}
+			// open log modal pinned to the latest line.
+			m.mode = modeLogModal
+			m.logScroll = m.maxLogScroll()
+			return m, nil
 		}
 	}
 	return m, nil
+}
+
+// maxLogScroll returns the largest valid logScroll offset given the
+// current terminal height. Computed against logModalBodyHeight so the
+// last line is always reachable but never goes past it.
+func (m Model) maxLogScroll() int {
+	n := len(m.task.LogTail)
+	body := m.logModalBodyHeight()
+	if n <= body {
+		return 0
+	}
+	return n - body
 }

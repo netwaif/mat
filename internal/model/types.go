@@ -62,7 +62,7 @@ type Task struct {
 	Goal       string
 	UpdatedAt  time.Time
 	Workers    []Worker
-	LogTail    []string // 최대 5줄, 주석/빈 줄 제외
+	LogTail    []string // 주석/빈 줄/헤딩 제외한 전체 로그 라인. UI가 잘라 표시한다.
 	ParseError string   // 비어 있지 않으면 YAML 파싱 실패
 }
 

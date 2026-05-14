@@ -45,8 +45,9 @@ func LoadTask(root, name string) (model.Task, error) {
 	t.Goal = readGoal(taskMD)
 
 	logPath := filepath.Join(taskDir, "log.md")
-	// log tail (display only — 5 lines for the footer/strip)
-	t.LogTail = readLogTail(logPath, 5)
+	// log lines (display only — UI slices to fit the available height
+	// for the main view, or shows the full list in the log modal).
+	t.LogTail = readLogLines(logPath)
 
 	// workers
 	planned := readPlannedWorkers(taskMD)
@@ -150,7 +151,10 @@ func readGoal(taskMD string) string {
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
-func readLogTail(path string, n int) []string {
+// readLogLines returns every non-blank, non-comment, non-heading line from
+// log.md in chronological order. The UI is responsible for slicing (tail
+// for the main view, full list for the log modal).
+func readLogLines(path string) []string {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil
@@ -174,10 +178,7 @@ func readLogTail(path string, n int) []string {
 		}
 		kept = append(kept, trim)
 	}
-	if len(kept) <= n {
-		return kept
-	}
-	return kept[len(kept)-n:]
+	return kept
 }
 
 func buildWorker(workersDir, role, logPath string) model.Worker {
@@ -224,7 +225,7 @@ func buildWorker(workersDir, role, logPath string) model.Worker {
 	return w
 }
 
-// workerHasError scans the entire log.md (same filters as readLogTail —
+// workerHasError scans the entire log.md (same filters as readLogLines —
 // blank / "#" / "<!--" lines excluded) in reverse. The LATEST line that
 // mentions the role wins; if it carries [ERROR], the worker is errored.
 // Missing or unreadable log file → false (no error state).
