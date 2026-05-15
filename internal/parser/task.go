@@ -186,7 +186,6 @@ func buildWorker(workersDir, role, logPath string) model.Worker {
 	wdir := filepath.Join(workersDir, role)
 
 	briefPath := filepath.Join(wdir, "brief.md")
-	resultPath := filepath.Join(wdir, "result.md")
 
 	if st, err := os.Stat(briefPath); err == nil && !st.IsDir() {
 		w.HasBrief = true
@@ -200,14 +199,12 @@ func buildWorker(workersDir, role, logPath string) model.Worker {
 			w.UpdatedAt = st.ModTime()
 		}
 	}
-	if st, err := os.Stat(resultPath); err == nil && !st.IsDir() {
-		if st.Size() > 0 {
-			w.HasResult = true
-		}
+	if resultPath, resultSize, resultMod, ok := bestResultFile(wdir); ok {
+		w.HasResult = true
 		w.ResultPath = resultPath
-		w.ResultSize = st.Size()
-		if st.ModTime().After(w.UpdatedAt) {
-			w.UpdatedAt = st.ModTime()
+		w.ResultSize = resultSize
+		if resultMod.After(w.UpdatedAt) {
+			w.UpdatedAt = resultMod
 		}
 	}
 
@@ -223,6 +220,55 @@ func buildWorker(workersDir, role, logPath string) model.Worker {
 		w.State = model.StatePending
 	}
 	return w
+}
+
+func bestResultFile(wdir string) (string, int64, time.Time, bool) {
+	preferred := []string{"result.md", "result.tokens.json", "result.output.json"}
+	for _, name := range preferred {
+		path := filepath.Join(wdir, name)
+		if st, ok := nonEmptyFile(path); ok {
+			return path, st.Size(), st.ModTime(), true
+		}
+	}
+
+	entries, err := os.ReadDir(wdir)
+	if err != nil {
+		return "", 0, time.Time{}, false
+	}
+	var candidates []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasPrefix(name, "result.") {
+			continue
+		}
+		if strings.HasPrefix(name, "result.partial-") {
+			continue
+		}
+		path := filepath.Join(wdir, name)
+		if _, ok := nonEmptyFile(path); ok {
+			candidates = append(candidates, path)
+		}
+	}
+	sort.Strings(candidates)
+	if len(candidates) == 0 {
+		return "", 0, time.Time{}, false
+	}
+	st, ok := nonEmptyFile(candidates[0])
+	if !ok {
+		return "", 0, time.Time{}, false
+	}
+	return candidates[0], st.Size(), st.ModTime(), true
+}
+
+func nonEmptyFile(path string) (os.FileInfo, bool) {
+	st, err := os.Stat(path)
+	if err != nil || st.IsDir() || st.Size() == 0 {
+		return nil, false
+	}
+	return st, true
 }
 
 // workerHasError scans the entire log.md (same filters as readLogLines —
