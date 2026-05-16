@@ -37,12 +37,20 @@ MVP는 **모니터링만**. 작업 생성/승인/호출은 범위 밖.
 
 ## 상태 아이콘
 
+우선순위 高→低: 에러 → 재호출(log) → 완료 → 실행 중 → 대기.
+
 | 아이콘 | 의미 | 판정 기준 |
 |--------|------|---------|
-| `[ ✓ ]` | 완료 | `result.md` 존재 + 비어있지 않음 |
-| `[ ⏳ ]` | 실행 중 | `brief.md` 존재 + `result.md` 없음(또는 빈 파일) |
-| `[ · ]` | 대기 | `brief.md` 없음 (task.md의 planned_workers엔 명시) |
-| `[ ✗ ]` | 에러 | log.md의 해당 워커 마지막 태그가 `[ERROR]` |
+| `[ ✗ ]` | 에러 | log.md의 해당 워커 마지막 언급이 `[ERROR]` |
+| `[ ⏳ ]` | 실행 중 | (a) `brief*` 존재 + 비어있지 않은 짝 `result*` 없음, (b) 최신 brief 반복(`-fix<N>`)에 짝 result 반복이 아직 없음, 또는 (c) log.md에서 해당 워커 마지막 언급이 명백한 재호출(`재호출`·`재오픈`·`fix iter`·`N차`)이고 그 뒤 완료 기록 없음 |
+| `[ ✓ ]` | 완료 | 비어있지 않은 result(또는 폴백 아티팩트)가 존재하고 그 반복번호 ≥ 최신 brief 반복번호 |
+| `[ · ]` | 대기 | `brief` 없음 (task.md의 planned_workers엔 명시) |
+
+**반복(fix-iter) 파일.** 워커는 `brief.md`→`brief-fix.md`→`brief-fix2.md`,
+`result.md`→`result-fix.md`→`result-fix2.md`로 반복한다. brief/result는 각각 반복번호
+우선(동률 시 mtime→이름)으로 1개 선택해 표시한다. 반복번호가 권위 신호(mtime은
+git checkout·복사로 역전 가능). `result.partial-*`는 표시/완료에 미사용(UpdatedAt
+신선도에만). `UpdatedAt`은 워커 폴더의 모든 `brief*`/`result*`(partial 포함) 최신 mtime.
 
 ## 와이어프레임
 
@@ -128,8 +136,14 @@ MVP는 **모니터링만**. 작업 생성/승인/호출은 범위 밖.
 - **입력**: 환경변수 `MAT_ROOT` 또는 cwd가 `~/VSCodeWorkspace/MultiAgent` 같은 starter root
 - **활성 작업 결정 순서**:
   1. 커맨드 인자 `mat <task-name>` 명시 시 그 작업
-  2. 없으면 `task.md`의 status가 `in_progress` 또는 `waiting_*`인 작업 중 가장 최근 수정
+  2. 없으면 `task.md`의 status가 `in_progress`·`reviewing`·`waiting_*`인 작업 중 가장 최근 수정
   3. 없으면 작업 목록 모달부터 띄움
+
+- **상태 색**: `done`=초록, `waiting_*`=주황, `in_progress`=강조, `reviewing`=마젠타,
+  `pending`=회색, `unknown`=빨강.
+- **task artifacts/**: `tasks/<task>/artifacts/`에 항목이 있으면 워커 박스 아래
+  Artifacts 박스로 최상위 엔트리(파일=크기, 디렉터리=재귀 파일 수) 표시. 비어 있으면
+  박스를 그리지 않는다(레이아웃 산술에서 제외).
 
 ## 폴더 구조 (구현 시)
 
