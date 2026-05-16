@@ -16,6 +16,7 @@ var (
 	colorWarn   = lipgloss.Color("214")
 	colorErr    = lipgloss.Color("203")
 	colorOK     = lipgloss.Color("42")
+	colorReview = lipgloss.Color("213")
 
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -46,6 +47,10 @@ var (
 			return base.Foreground(colorWarn)
 		case s == "in_progress":
 			return base.Foreground(colorAccent)
+		case s == "reviewing":
+			return base.Foreground(colorReview)
+		case s == "pending":
+			return base.Foreground(colorMuted)
 		case s == "unknown":
 			return base.Foreground(colorErr)
 		default:
@@ -122,6 +127,11 @@ func (m Model) renderMain() string {
 
 	workersBox := boxStyle.Width(inner).Render(renderWorkers(m.task.Workers))
 
+	var artifactsBox string
+	if len(m.task.Artifacts) > 0 {
+		artifactsBox = boxStyle.Width(inner).Render(renderArtifacts(m.task.Artifacts))
+	}
+
 	footer := footerHelp()
 
 	// --- compute how many log lines fit in remaining vertical space ---
@@ -136,6 +146,9 @@ func (m Model) renderMain() string {
 	}
 	usedRows += lipgloss.Height(goalBox) + 1
 	usedRows += lipgloss.Height(workersBox) + 1
+	if artifactsBox != "" {
+		usedRows += lipgloss.Height(artifactsBox) + 1
+	}
 	usedRows += lipgloss.Height(footer) // no trailing \n after footer
 
 	logLines := minLogLines
@@ -160,6 +173,10 @@ func (m Model) renderMain() string {
 	b.WriteString("\n")
 	b.WriteString(workersBox)
 	b.WriteString("\n")
+	if artifactsBox != "" {
+		b.WriteString(artifactsBox)
+		b.WriteString("\n")
+	}
 	b.WriteString(logBox)
 	b.WriteString("\n")
 	b.WriteString(footer)
@@ -203,6 +220,23 @@ func renderWorkers(ws []model.Worker) string {
 		case w.FromPlanned:
 			b.WriteString("\n")
 			b.WriteString("        " + mutedStyle.Render("실행 예정"))
+		}
+	}
+	return b.String()
+}
+
+// renderArtifacts renders the task-level artifacts/ box. Only called when
+// there is at least one entry (renderMain keeps the box out of the layout
+// arithmetic otherwise, so the empty common case wastes no rows).
+func renderArtifacts(arts []model.Artifact) string {
+	var b strings.Builder
+	b.WriteString(sectionTitleStyle.Render("Artifacts"))
+	for _, a := range arts {
+		b.WriteString("\n  ")
+		if a.IsDir {
+			b.WriteString(truncate(fmt.Sprintf("%s/  (%d files)", a.Name, a.Count), 70))
+		} else {
+			b.WriteString(truncate(fmt.Sprintf("%s  (%s)", a.Name, humanSize(a.Size)), 70))
 		}
 	}
 	return b.String()
@@ -274,14 +308,16 @@ func (m Model) renderModal() string {
 // the title/footer lines inside the modal box).
 //
 // chrome breakdown:
-//   doubleBorder top+bottom .... 2
-//   title line ................. 1
-//   blank line after title ..... 1
-//   blank line before footer ... 1
-//   footer/indicator line ...... 1
-//   safety margin .............. 1
-//   ---------------------------------
-//   total ...................... 7
+//
+//	doubleBorder top+bottom .... 2
+//	title line ................. 1
+//	blank line after title ..... 1
+//	blank line before footer ... 1
+//	footer/indicator line ...... 1
+//	safety margin .............. 1
+//	---------------------------------
+//	total ...................... 7
+//
 // This keeps the modal one row shy of m.height so a stray re-render or
 // terminal status row never clips the indicator line.
 func (m Model) logModalBodyHeight() int {

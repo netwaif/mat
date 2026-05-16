@@ -6,10 +6,10 @@ import "time"
 type WorkerState int
 
 const (
-	StatePending WorkerState = iota // [ · ] brief.md 없음
-	StateRunning                    // [ ⏳ ] brief.md 있고 result.md 없음/빈 파일
-	StateDone                       // [ ✓ ] result.md 존재 + 비어있지 않음
-	StateError                      // [ ✗ ] log.md의 해당 워커 마지막 태그가 [ERROR]
+	StatePending WorkerState = iota // [ · ] brief 없음
+	StateRunning                    // [ ⏳ ] brief 있고 짝 result 없음, 또는 log.md상 재호출 진행 중
+	StateDone                       // [ ✓ ] 비어있지 않은 result(rev ≥ 최신 brief rev) 존재
+	StateError                      // [ ✗ ] log.md의 해당 워커 마지막 언급이 [ERROR]
 )
 
 func (s WorkerState) Icon() string {
@@ -54,6 +54,14 @@ type Worker struct {
 	FromPlanned bool // task.md planned_workers 에만 있고 디스크 dir 없음
 }
 
+// Artifact is one top-level entry under tasks/<name>/artifacts/.
+type Artifact struct {
+	Name  string
+	Size  int64 // bytes (file); 0 for dir
+	IsDir bool
+	Count int // recursive file count (dir); 0 for file
+}
+
 // Task is the active task snapshot rendered by the main view.
 type Task struct {
 	Name       string
@@ -62,8 +70,9 @@ type Task struct {
 	Goal       string
 	UpdatedAt  time.Time
 	Workers    []Worker
-	LogTail    []string // 주석/빈 줄/헤딩 제외한 전체 로그 라인. UI가 잘라 표시한다.
-	ParseError string   // 비어 있지 않으면 YAML 파싱 실패
+	Artifacts  []Artifact // tasks/<name>/artifacts/ 최상위 (비면 nil)
+	LogTail    []string   // 주석/빈 줄/헤딩 제외한 전체 로그 라인. UI가 잘라 표시한다.
+	ParseError string     // 비어 있지 않으면 YAML 파싱 실패
 }
 
 // TaskBrief is one row of the task-switch modal.

@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -48,6 +50,8 @@ func LoadTask(root, name string) (model.Task, error) {
 	// log lines (display only — UI slices to fit the available height
 	// for the main view, or shows the full list in the log modal).
 	t.LogTail = readLogLines(logPath)
+
+	t.Artifacts = readArtifacts(taskDir)
 
 	// workers
 	planned := readPlannedWorkers(taskMD)
@@ -181,45 +185,194 @@ func readLogLines(path string) []string {
 	return kept
 }
 
+var reFix = regexp.MustCompile(`-fix(\d*)$`)
+
+// revision returns the fix-iteration number encoded in a worker file name:
+// 0 for the original (brief.md / result.md / result.foo.md /
+// result.tokens.json), 1 for "*-fix.md", N for "*-fix<N>.md". The trailing
+// extension is stripped first. The revision — not mtime — is the
+// authoritative freshness signal: git checkout / copy can invert mtimes.
+func revision(name string) int {
+	base := strings.TrimSuffix(name, filepath.Ext(name))
+	m := reFix.FindStringSubmatch(base)
+	if m == nil {
+		return 0
+	}
+	if m[1] == "" {
+		return 1
+	}
+	if n, err := strconv.Atoi(m[1]); err == nil {
+		return n
+	}
+	return 1
+}
+
+type sel struct {
+	path string
+	size int64
+	mod  time.Time
+	rev  int
+	ok   bool
+}
+
+// better reports whether c outranks best by (revision, mtime, name).
+func better(c, best sel) bool {
+	if !best.ok {
+		return true
+	}
+	if c.rev != best.rev {
+		return c.rev > best.rev
+	}
+	if !c.mod.Equal(best.mod) {
+		return c.mod.After(best.mod)
+	}
+	return c.path > best.path
+}
+
 func buildWorker(workersDir, role, logPath string) model.Worker {
 	w := model.Worker{Role: role}
 	wdir := filepath.Join(workersDir, role)
 
-	briefPath := filepath.Join(wdir, "brief.md")
+	entries, _ := os.ReadDir(wdir)
+	var briefSel, resultSel sel
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		st, err := os.Stat(filepath.Join(wdir, name))
+		if err != nil || st.IsDir() {
+			continue
+		}
+		// UpdatedAt = newest mtime of any brief*/result* file (incl partial).
+		if (strings.HasPrefix(name, "brief") || strings.HasPrefix(name, "result")) &&
+			st.ModTime().After(w.UpdatedAt) {
+			w.UpdatedAt = st.ModTime()
+		}
+		c := sel{
+			path: filepath.Join(wdir, name),
+			size: st.Size(),
+			mod:  st.ModTime(),
+			rev:  revision(name),
+			ok:   true,
+		}
+		isBrief := strings.HasPrefix(name, "brief") && strings.HasSuffix(name, ".md")
+		isResultMD := strings.HasPrefix(name, "result") && strings.HasSuffix(name, ".md")
+		isPartial := strings.HasPrefix(name, "result.partial-")
+		switch {
+		case isBrief:
+			if better(c, briefSel) {
+				briefSel = c
+			}
+		case isResultMD && !isPartial && st.Size() > 0:
+			if better(c, resultSel) {
+				resultSel = c
+			}
+		}
+	}
 
-	if st, err := os.Stat(briefPath); err == nil && !st.IsDir() {
+	if briefSel.ok {
 		w.HasBrief = true
-		w.BriefPath = briefPath
-		w.BriefSize = st.Size()
-		if data, err := os.ReadFile(briefPath); err == nil {
+		w.BriefPath = briefSel.path
+		w.BriefSize = briefSel.size
+		if data, err := os.ReadFile(briefSel.path); err == nil {
 			w.BriefChars = utf8.RuneCountInString(string(data))
 			w.Purpose = firstMeaningfulLine(string(data))
 		}
-		if st.ModTime().After(w.UpdatedAt) {
-			w.UpdatedAt = st.ModTime()
-		}
 	}
-	if resultPath, resultSize, resultMod, ok := bestResultFile(wdir); ok {
+
+	if resultSel.ok {
 		w.HasResult = true
-		w.ResultPath = resultPath
-		w.ResultSize = resultSize
-		if resultMod.After(w.UpdatedAt) {
-			w.UpdatedAt = resultMod
+		w.ResultPath = resultSel.path
+		w.ResultSize = resultSel.size
+	} else if rp, rs, rm, ok := bestResultFile(wdir); ok {
+		// no result*.md — fall back to artifacts (tokens / output /
+		// generic), preserving the original bestResultFile priority.
+		w.HasResult = true
+		w.ResultPath = rp
+		w.ResultSize = rs
+		resultSel = sel{path: rp, size: rs, mod: rm, rev: revision(filepath.Base(rp)), ok: true}
+		if rm.After(w.UpdatedAt) {
+			w.UpdatedAt = rm
 		}
 	}
 
-	// state derivation
-	switch {
-	case workerHasError(role, logPath):
+	// state derivation, precedence high→low.
+	switch ls := workerLogState(role, logPath); {
+	case ls == logError:
 		w.State = model.StateError
-	case w.HasResult:
+	case ls == logRerun:
+		// log.md says this worker was re-dispatched with no later
+		// completion → running again (covers in-place re-runs that leave
+		// the old result.md on disk).
+		w.State = model.StateRunning
+	case w.HasResult && resultSel.rev >= briefSel.rev:
 		w.State = model.StateDone
+	case w.HasResult:
+		// a newer brief revision exists but its paired result does not
+		// (fix-iter restart in progress).
+		w.State = model.StateRunning
 	case w.HasBrief:
 		w.State = model.StateRunning
 	default:
 		w.State = model.StatePending
 	}
 	return w
+}
+
+// readArtifacts lists the top-level entries of tasks/<name>/artifacts/.
+// Missing / unreadable dir → nil (never panics). Dirs report a recursive
+// file count; files report byte size. Sorted: dirs first, then name.
+func readArtifacts(taskDir string) []model.Artifact {
+	dir := filepath.Join(taskDir, "artifacts")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []model.Artifact
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		if e.IsDir() {
+			out = append(out, model.Artifact{
+				Name:  name,
+				IsDir: true,
+				Count: countFiles(filepath.Join(dir, name)),
+			})
+			continue
+		}
+		st, err := e.Info()
+		if err != nil {
+			continue
+		}
+		out = append(out, model.Artifact{Name: name, Size: st.Size()})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].IsDir != out[j].IsDir {
+			return out[i].IsDir
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+func countFiles(root string) int {
+	n := 0
+	filepath.WalkDir(root, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !d.IsDir() {
+			n++
+		}
+		return nil
+	})
+	return n
 }
 
 func bestResultFile(wdir string) (string, int64, time.Time, bool) {
@@ -271,14 +424,36 @@ func nonEmptyFile(path string) (os.FileInfo, bool) {
 	return st, true
 }
 
-// workerHasError scans the entire log.md (same filters as readLogLines —
-// blank / "#" / "<!--" lines excluded) in reverse. The LATEST line that
-// mentions the role wins; if it carries [ERROR], the worker is errored.
-// Missing or unreadable log file → false (no error state).
-func workerHasError(role, logPath string) bool {
+type logState int
+
+const (
+	logNone logState = iota
+	logRerun
+	logError
+)
+
+var (
+	reRerunNum = regexp.MustCompile(`\d+차`)
+	completeKW = []string{"응답 수령", "수신", "저장", "[COMPLETE]", "[VERIFICATION]", "완료", "result"}
+	rerunKW    = []string{"재호출", "재오픈", "fix iter"}
+)
+
+// workerLogState classifies the LATEST log.md line mentioning role (same
+// scan/filters as readLogLines: blank / "#" / "<!--" excluded, reverse
+// order). It absorbs the old workerHasError:
+//
+//   - line carries [ERROR]               → logError  (unchanged behavior)
+//   - line is a clear re-dispatch with no
+//     completion keyword                 → logRerun
+//   - anything else / no mention / no log → logNone
+//
+// Safety bias: logRerun only fires on an unambiguous re-dispatch, so the
+// caller never shows a genuinely-done worker as running; a missed re-run
+// is acceptable (the file-based revision pairing still covers fix-iters).
+func workerLogState(role, logPath string) logState {
 	f, err := os.Open(logPath)
 	if err != nil {
-		return false
+		return logNone
 	}
 	defer f.Close()
 
@@ -286,30 +461,39 @@ func workerHasError(role, logPath string) bool {
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	var kept []string
 	for sc.Scan() {
-		line := sc.Text()
-		trim := strings.TrimSpace(line)
-		if trim == "" {
-			continue
-		}
-		if strings.HasPrefix(trim, "<!--") {
-			continue
-		}
-		if strings.HasPrefix(trim, "#") {
+		trim := strings.TrimSpace(sc.Text())
+		if trim == "" || strings.HasPrefix(trim, "<!--") || strings.HasPrefix(trim, "#") {
 			continue
 		}
 		kept = append(kept, trim)
 	}
-	if err := sc.Err(); err != nil {
-		return false
+	if sc.Err() != nil {
+		return logNone
 	}
 	for i := len(kept) - 1; i >= 0; i-- {
 		ln := kept[i]
 		if !strings.Contains(ln, role) {
 			continue
 		}
-		return strings.Contains(ln, "[ERROR]")
+		if strings.Contains(ln, "[ERROR]") {
+			return logError
+		}
+		for _, kw := range completeKW {
+			if strings.Contains(ln, kw) {
+				return logNone
+			}
+		}
+		for _, kw := range rerunKW {
+			if strings.Contains(ln, kw) {
+				return logRerun
+			}
+		}
+		if reRerunNum.MatchString(ln) {
+			return logRerun
+		}
+		return logNone
 	}
-	return false
+	return logNone
 }
 
 func firstMeaningfulLine(s string) string {
@@ -333,7 +517,7 @@ func firstMeaningfulLine(s string) string {
 
 // PickActiveTask implements DESIGN.md activation order:
 //  1. (caller already handled arg)
-//  2. task.md status==in_progress|waiting_* — newest task.md mtime
+//  2. task.md status==in_progress|reviewing|waiting_* — newest task.md mtime
 //  3. "" — caller opens modal
 func PickActiveTask(root string) string {
 	tasksDir := filepath.Join(root, "tasks")
@@ -364,7 +548,7 @@ func PickActiveTask(root string) string {
 			continue
 		}
 		status := strings.TrimSpace(hdr["status"])
-		if status == "in_progress" || strings.HasPrefix(status, "waiting_") {
+		if status == "in_progress" || status == "reviewing" || strings.HasPrefix(status, "waiting_") {
 			cands = append(cands, cand{name, st.ModTime()})
 		}
 	}
