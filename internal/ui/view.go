@@ -159,7 +159,14 @@ func (m Model) renderMain() string {
 		}
 	}
 
-	logBox := boxStyle.Width(inner).Render(renderLog(m.task.LogTail, logLines))
+	// logTextWidth is the cell budget for a single log line's text.
+	// boxStyle.Width(inner) sets the pre-border block width; lipgloss wraps
+	// content at inner - horizontalPadding (= inner-2, padding is 0,1). Each
+	// log line is rendered with a 2-space indent, so the text itself gets
+	// inner-4 (2 indent + inner-4 = inner-2 = the wrap point, no wrap). This
+	// mirrors renderLogModal's `inner-2` (no indent there).
+	logTextWidth := inner - 4
+	logBox := boxStyle.Width(inner).Render(renderLog(m.task.LogTail, logLines, logTextWidth))
 
 	// --- assemble ---
 	var b strings.Builder
@@ -244,9 +251,15 @@ func renderArtifacts(arts []model.Artifact) string {
 
 // renderLog renders the tail of the log into the main view. `limit` is the
 // maximum number of lines to show (computed from terminal height in
-// renderMain). The section title reflects how many we are showing vs total
-// so the user knows there is more in the [L] modal.
-func renderLog(tail []string, limit int) string {
+// renderMain). `width` is the per-line cell budget, derived from the terminal
+// width by the caller so long lines clip with `…` relative to the actual box
+// size instead of a fixed 80 (matching the [L] modal's width-aware behavior).
+// width is taken as-is — truncate() handles degenerate values (n<=0 → "",
+// n==1 → "…") gracefully, and the only caller (renderMain) always passes
+// inner-4 ≥ 26, so no clamp is applied (a floor would risk exceeding the
+// caller's actual box width and forcing a wrap). The section title reflects
+// how many we are showing vs total so the user knows there is more in [L].
+func renderLog(tail []string, limit, width int) string {
 	if limit < 1 {
 		limit = 1
 	}
@@ -270,7 +283,7 @@ func renderLog(tail []string, limit int) string {
 	}
 	for _, ln := range shown {
 		b.WriteString("  ")
-		b.WriteString(truncate(ln, 80))
+		b.WriteString(truncate(ln, width))
 		b.WriteString("\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
