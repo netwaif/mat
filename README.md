@@ -8,7 +8,7 @@ starter 시스템 없이 단독으로는 의미가 없다.
 
 ## 누가 이 도구를 쓰나
 
-netwaif 채널의 MultiAgent 매뉴얼을 보고 starter를 설치한 학습자.
+AI 치트키 채널의 MultiAgent 매뉴얼을 보고 starter를 설치한 학습자.
 
 ## 무엇을 보여주나
 
@@ -33,8 +33,8 @@ brew install netwaif/tap/mat
 또는 소스 빌드 (Go 1.22 이상):
 
 ```bash
-git clone https://github.com/netwaif/mat.git ~/VSCodeWorkspace/mat
-cd ~/VSCodeWorkspace/mat
+git clone https://github.com/netwaif/mat.git
+cd mat
 go build -o mat .
 ```
 
