@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -49,6 +50,17 @@ func resolveRoot() (string, error) {
 			return "", err
 		}
 		return abs, nil
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if data, err := os.ReadFile(filepath.Join(home, ".config", "mat", "root")); err == nil {
+			if line := strings.TrimSpace(string(data)); line != "" {
+				abs, err := filepath.Abs(expandHome(line))
+				if err != nil {
+					return "", err
+				}
+				return abs, nil
+			}
+		}
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
