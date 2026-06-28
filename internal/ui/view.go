@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/netwaif/mat/internal/coach"
 	"github.com/netwaif/mat/internal/model"
 )
 
@@ -69,6 +70,12 @@ const minLogLines = 5
 const logBoxChrome = 3
 
 func (m Model) View() string {
+	// The usage view is a full-screen replacement (not an overlay) and is
+	// independent of task loading, so it short-circuits before the task
+	// loading guard below.
+	if m.mode == modeUsage {
+		return m.renderUsage()
+	}
 	if !m.loaded && m.mode != modeModal {
 		return mutedStyle.Render("loading…  (root: " + m.root + ")")
 	}
@@ -290,7 +297,181 @@ func renderLog(tail []string, limit, width int) string {
 }
 
 func footerHelp() string {
-	return mutedStyle.Render(" 자동 갱신 2s · [r] 즉시   [t] 작업 전환   [L] 로그   [q] 종료")
+	return mutedStyle.Render(" 자동 갱신 2s · [r] 즉시   [t] 작업 전환   [L] 로그   [u] 사용량   [q] 종료")
+}
+
+// usageProviderOrder fixes the display order of the three providers,
+// independent of Go's random map iteration.
+var usageProviderOrder = []string{"claude", "codex", "antigravity"}
+
+// usageWindowOrder fixes the order of windows within a provider. Providers
+// that omit a window (antigravity has no 5h) simply skip it.
+var usageWindowOrder = []string{"5h", "7d"}
+
+func usageFooter() string {
+	return mutedStyle.Render(" 자동 갱신 30s · [r] 즉시   [u/esc] 돌아가기   [q] 종료")
+}
+
+// renderUsage draws the full-screen usage view from the last coach
+// snapshot. mat never reimplements coach's judgement — it only formats the
+// reported plan/level/action/reason and the per-window left%/reset.
+func (m Model) renderUsage() string {
+	width := m.width
+	if width <= 0 {
+		width = 78
+	}
+	inner := width - 4
+	if inner < 30 {
+		inner = 30
+	}
+
+	var b strings.Builder
+
+	title := headerStyle.Render("mat") + "  —  사용량"
+	switch {
+	case m.usageLoading:
+		title += "   " + lipgloss.NewStyle().Foreground(colorAccent).Render("· 갱신 중…")
+	case !m.usageFetchedAt.IsZero():
+		title += "   " + mutedStyle.Render("· Updated "+m.usageFetchedAt.Format("15:04:05"))
+	}
+	b.WriteString(boxStyle.Width(inner).Render(title))
+	b.WriteString("\n")
+
+	switch {
+	case !m.usageHasData && m.usageErr != "":
+		// hard failure before any data (e.g. coach 미설치)
+		b.WriteString(boxStyle.Width(inner).Render(
+			lipgloss.NewStyle().Foreground(colorErr).Render("⚠ " + m.usageErr)))
+		b.WriteString("\n")
+	case !m.usageHasData:
+		// first fetch in flight, nothing to show yet
+		b.WriteString(boxStyle.Width(inner).Render(
+			mutedStyle.Render("coach 실행 중… (codexbar는 느릴 수 있어요)")))
+		b.WriteString("\n")
+	default:
+		for _, key := range usageProviderOrder {
+			prov, ok := m.usage.Providers[key]
+			b.WriteString(boxStyle.Width(inner).Render(renderProvider(key, prov, ok, inner-2)))
+			b.WriteString("\n")
+		}
+		// a refresh that failed while we still hold a prior snapshot:
+		// keep the stale data above, note the failure inline.
+		if m.usageErr != "" {
+			b.WriteString(mutedStyle.Render(" ⚠ " + truncate(m.usageErr, inner)))
+			b.WriteString("\n")
+		}
+	}
+
+	b.WriteString(usageFooter())
+	return b.String()
+}
+
+// renderProvider renders one provider box body. `present` is false when the
+// snapshot has no entry for this provider key at all. textWidth is the cell
+// budget for wrapping/truncating the longer free-text lines.
+func renderProvider(label string, p coach.Provider, present bool, textWidth int) string {
+	var b strings.Builder
+
+	if !present {
+		b.WriteString(sectionTitleStyle.Render(label))
+		b.WriteString("\n  ")
+		b.WriteString(mutedStyle.Render("데이터 없음"))
+		return b.String()
+	}
+
+	dot := lipgloss.NewStyle().Foreground(levelColor(p.Level)).Render("●")
+	b.WriteString(fmt.Sprintf("%s %s  %s", dot, boldStr(label), mutedStyle.Render(p.Plan)))
+
+	if !p.Ok {
+		b.WriteString("\n  ")
+		b.WriteString(mutedStyle.Render("데이터 없음"))
+		if p.Reason != "" {
+			b.WriteString("\n  ")
+			b.WriteString(mutedStyle.Render(truncate(p.Reason, textWidth-2)))
+		}
+		return b.String()
+	}
+
+	if p.Action != "" {
+		b.WriteString("\n  ")
+		b.WriteString(lipgloss.NewStyle().Foreground(levelColor(p.Level)).
+			Render(truncate(p.Action, textWidth-2)))
+	}
+
+	for _, wk := range usageWindowOrder {
+		w, has := p.Windows[wk]
+		if !has {
+			continue
+		}
+		b.WriteString("\n  ")
+		b.WriteString(fmt.Sprintf("%-3s %s %3d%%  · 리셋 %s",
+			wk, usageBar(w.LeftPct, 10), w.LeftPct, humanizeReset(w.ResetMin)))
+	}
+
+	if p.Reason != "" {
+		b.WriteString("\n  ")
+		b.WriteString(mutedStyle.Render(truncate(p.Reason, textWidth-2)))
+	}
+	return b.String()
+}
+
+// levelColor maps coach's level string to a mat palette color. Unknown
+// levels fall back to muted so an added level never crashes or mis-signals.
+func levelColor(level string) lipgloss.Color {
+	switch level {
+	case "green":
+		return colorOK
+	case "yellow", "amber", "warn", "warning":
+		return colorWarn
+	case "red", "danger", "critical":
+		return colorErr
+	default:
+		return colorMuted
+	}
+}
+
+// usageBar renders a left%-filled bar of the given cell width.
+func usageBar(pct, width int) string {
+	if width <= 0 {
+		width = 10
+	}
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	filled := (pct*width + 50) / 100 // round to nearest cell
+	if filled > width {
+		filled = width
+	}
+	return lipgloss.NewStyle().Foreground(colorAccent).Render(strings.Repeat("▓", filled)) +
+		mutedStyle.Render(strings.Repeat("░", width-filled))
+}
+
+// humanizeReset turns a minutes-until-reset count into a compact human
+// string: "45m", "2h19m", "2d3h".
+func humanizeReset(min int) string {
+	if min <= 0 {
+		return "곧"
+	}
+	if min < 60 {
+		return fmt.Sprintf("%dm", min)
+	}
+	h := min / 60
+	mm := min % 60
+	if h < 24 {
+		if mm == 0 {
+			return fmt.Sprintf("%dh", h)
+		}
+		return fmt.Sprintf("%dh%dm", h, mm)
+	}
+	d := h / 24
+	hh := h % 24
+	if hh == 0 {
+		return fmt.Sprintf("%dd", d)
+	}
+	return fmt.Sprintf("%dd%dh", d, hh)
 }
 
 func (m Model) renderModal() string {
