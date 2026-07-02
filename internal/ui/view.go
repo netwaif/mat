@@ -308,6 +308,23 @@ var usageProviderOrder = []string{"claude", "codex", "antigravity"}
 // that omit a window (antigravity has no 5h) simply skip it.
 var usageWindowOrder = []string{"5h", "7d"}
 
+// usageProviderColor mirrors coach's PROV_COLOR (claude=yellow, codex=cyan,
+// antigravity=magenta) so mat's usage view reads the same as coach itself.
+var usageProviderColor = map[string]lipgloss.Color{
+	"claude":      lipgloss.Color("3"),
+	"codex":       lipgloss.Color("6"),
+	"antigravity": lipgloss.Color("5"),
+}
+
+// providerColor returns the coach-matched color for a provider key, falling
+// back to the generic accent for providers coach may add later.
+func providerColor(key string) lipgloss.Color {
+	if c, ok := usageProviderColor[key]; ok {
+		return c
+	}
+	return colorAccent
+}
+
 func usageFooter() string {
 	return mutedStyle.Render(" 자동 갱신 30s · [r] 즉시   [u/esc] 돌아가기   [q] 종료")
 }
@@ -380,7 +397,8 @@ func renderProvider(label string, p coach.Provider, present bool, textWidth int)
 	}
 
 	dot := lipgloss.NewStyle().Foreground(levelColor(p.Level)).Render("●")
-	b.WriteString(fmt.Sprintf("%s %s  %s", dot, boldStr(label), mutedStyle.Render(p.Plan)))
+	name := lipgloss.NewStyle().Bold(true).Foreground(providerColor(label)).Render(label)
+	b.WriteString(fmt.Sprintf("%s %s  %s", dot, name, mutedStyle.Render(p.Plan)))
 
 	if !p.Ok {
 		b.WriteString("\n  ")
@@ -405,7 +423,7 @@ func renderProvider(label string, p coach.Provider, present bool, textWidth int)
 		}
 		b.WriteString("\n  ")
 		b.WriteString(fmt.Sprintf("%-3s %s %3d%%  · 리셋 %s",
-			wk, usageBar(w.LeftPct, 10), w.LeftPct, humanizeReset(w.ResetMin)))
+			wk, usageBar(w.LeftPct, 10, providerColor(label)), w.LeftPct, humanizeReset(w.ResetMin)))
 	}
 
 	if p.Reason != "" {
@@ -430,8 +448,9 @@ func levelColor(level string) lipgloss.Color {
 	}
 }
 
-// usageBar renders a left%-filled bar of the given cell width.
-func usageBar(pct, width int) string {
+// usageBar renders a left%-filled bar of the given cell width, filled in the
+// caller's per-provider color.
+func usageBar(pct, width int, fill lipgloss.Color) string {
 	if width <= 0 {
 		width = 10
 	}
@@ -445,7 +464,7 @@ func usageBar(pct, width int) string {
 	if filled > width {
 		filled = width
 	}
-	return lipgloss.NewStyle().Foreground(colorAccent).Render(strings.Repeat("▓", filled)) +
+	return lipgloss.NewStyle().Foreground(fill).Render(strings.Repeat("▓", filled)) +
 		mutedStyle.Render(strings.Repeat("░", width-filled))
 }
 
