@@ -319,3 +319,50 @@ func TestReadArtifacts(t *testing.T) {
 		}
 	})
 }
+
+func TestReadYAMLHeaderFrontmatterFallback(t *testing.T) {
+	dir := t.TempDir()
+
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus string
+		wantOK     bool
+	}{
+		{
+			name:       "frontmatter",
+			body:       "---\nname: x\nstatus: done\n---\n\n## 과제\n본문\n",
+			wantStatus: "done",
+			wantOK:     true,
+		},
+		{
+			name:       "fence wins over frontmatter",
+			body:       "---\nstatus: frontmatter\n---\n\n## 메타\n\n```yaml\nstatus: fenced\n```\n",
+			wantStatus: "fenced",
+			wantOK:     true,
+		},
+		{
+			name:   "unclosed frontmatter rejected",
+			body:   "---\nstatus: done\n\n본문만 계속\n",
+			wantOK: false,
+		},
+		{
+			name:   "no header at all",
+			body:   "# 제목\n\n본문\n",
+			wantOK: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			md := filepath.Join(dir, tt.name+".md")
+			writeFile(t, md, tt.body)
+			hdr, ok := readYAMLHeader(md)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if tt.wantOK && hdr["status"] != tt.wantStatus {
+				t.Fatalf("status = %q, want %q", hdr["status"], tt.wantStatus)
+			}
+		})
+	}
+}
