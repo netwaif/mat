@@ -7,11 +7,13 @@ import (
 )
 
 // readYAMLHeader extracts flat key:value pairs from the FIRST ```yaml fenced
-// block in a markdown file. Nested structures, lists, anchors are ignored
-// (only top-level scalar values are returned). Comments (#...) are stripped.
+// block in a markdown file, falling back to a leading `---` frontmatter
+// block when no fence exists (LLM sessions sometimes write task.md that
+// way). Nested structures, lists, anchors are ignored (only top-level
+// scalar values are returned). Comments (#...) are stripped.
 // Returns (map, true) on success. Returns (nil, false) when:
 //   - file unreadable
-//   - no ```yaml block found
+//   - no ```yaml block and no frontmatter found
 //   - block contains no parseable scalar pairs
 //
 // This is intentionally tiny — task.md/MVP only needs `status`, and we never
@@ -26,23 +28,24 @@ func readYAMLHeader(path string) (map[string]string, bool) {
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-	inBlock := false
-	out := map[string]string{}
-
+	var lines []string
 	for sc.Scan() {
-		line := sc.Text()
-		trim := strings.TrimSpace(line)
+		lines = append(lines, sc.Text())
+	}
+	if err := sc.Err(); err != nil {
+		return nil, false
+	}
 
-		if !inBlock {
-			if trim == "```yaml" || trim == "``` yaml" {
-				inBlock = true
-			}
-			continue
-		}
-		// inside the block
-		if strings.HasPrefix(trim, "```") {
-			break
-		}
+	block := yamlFenceBlock(lines)
+	if block == nil {
+		block = frontmatterBlock(lines)
+	}
+	if block == nil {
+		return nil, false
+	}
+
+	out := map[string]string{}
+	for _, line := range block {
 		// strip comments
 		if idx := strings.Index(line, "#"); idx >= 0 {
 			// preserve "#" only when inside quotes — MVP: not needed for our keys
@@ -70,13 +73,59 @@ func readYAMLHeader(path string) (map[string]string, bool) {
 		val = strings.Trim(val, `"'`)
 		out[key] = val
 	}
-	if err := sc.Err(); err != nil {
-		return nil, false
-	}
 	if len(out) == 0 {
 		return nil, false
 	}
 	return out, true
+}
+
+// yamlFenceBlock returns the lines inside the FIRST ```yaml fenced block,
+// or nil if there is none.
+func yamlFenceBlock(lines []string) []string {
+	start := -1
+	for i, line := range lines {
+		trim := strings.TrimSpace(line)
+		if start < 0 {
+			if trim == "```yaml" || trim == "``` yaml" {
+				start = i + 1
+			}
+			continue
+		}
+		if strings.HasPrefix(trim, "```") {
+			return lines[start:i]
+		}
+	}
+	if start < 0 {
+		return nil
+	}
+	return lines[start:] // unclosed fence: parse what we have
+}
+
+// frontmatterBlock returns the lines inside a leading `---` frontmatter
+// block (the first non-blank line must be exactly "---"; the block ends at
+// the next "---" or "..."), or nil if the file does not start with one.
+func frontmatterBlock(lines []string) []string {
+	start := -1
+	for i, line := range lines {
+		trim := strings.TrimSpace(line)
+		if trim == "" {
+			continue
+		}
+		if trim == "---" {
+			start = i + 1
+		}
+		break
+	}
+	if start < 0 {
+		return nil
+	}
+	for i := start; i < len(lines); i++ {
+		trim := strings.TrimSpace(lines[i])
+		if trim == "---" || trim == "..." {
+			return lines[start:i]
+		}
+	}
+	return nil // unclosed frontmatter: not a frontmatter block
 }
 
 // readPlannedWorkers extracts `- role: <name>` entries appearing under a
