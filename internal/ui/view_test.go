@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/netwaif/mat/internal/coach"
 	"github.com/netwaif/mat/internal/model"
 )
 
@@ -104,5 +105,38 @@ func TestRenderArtifacts(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("renderArtifacts output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// coach reports the Fable 5 weekly window (fable_7d) only on Max plans;
+// the usage view must show it as a "Fable" row when present and render
+// nothing extra when absent (basic plans).
+func TestRenderProviderFableWindow(t *testing.T) {
+	withFable := coach.Provider{
+		Ok: true, Plan: "Claude Max 5x", Level: "green",
+		Windows: map[string]coach.Window{
+			"5h":       {LeftPct: 96, ResetMin: 235},
+			"7d":       {LeftPct: 45, ResetMin: 1125},
+			"fable_7d": {LeftPct: 25, ResetMin: 1125},
+		},
+	}
+	out := renderProvider("claude", withFable, true, 70)
+	if !strings.Contains(out, "Fable") {
+		t.Errorf("fable_7d present but no Fable row:\n%s", out)
+	}
+	if strings.Contains(out, "fable_7d") {
+		t.Errorf("raw fable_7d key leaked into output:\n%s", out)
+	}
+
+	withoutFable := coach.Provider{
+		Ok: true, Plan: "Claude Pro", Level: "green",
+		Windows: map[string]coach.Window{
+			"5h": {LeftPct: 96, ResetMin: 235},
+			"7d": {LeftPct: 45, ResetMin: 1125},
+		},
+	}
+	out = renderProvider("claude", withoutFable, true, 70)
+	if strings.Contains(out, "Fable") || strings.Contains(out, "fable") {
+		t.Errorf("no fable_7d window but Fable row rendered:\n%s", out)
 	}
 }
