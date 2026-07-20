@@ -305,8 +305,22 @@ func footerHelp() string {
 var usageProviderOrder = []string{"claude", "codex", "antigravity"}
 
 // usageWindowOrder fixes the order of windows within a provider. Providers
-// that omit a window (antigravity has no 5h) simply skip it.
-var usageWindowOrder = []string{"5h", "7d"}
+// that omit a window (antigravity has no 5h; fable_7d only exists on Max
+// plans) simply skip it.
+var usageWindowOrder = []string{"5h", "7d", "fable_7d"}
+
+// usageWindowLabel maps a coach window key to its display label, mirroring
+// coach's own rendering of the Fable 5 weekly window.
+var usageWindowLabel = map[string]string{"fable_7d": "Fable"}
+
+// windowLabel returns the display label for a window key, falling back to
+// the raw key for windows coach may add later.
+func windowLabel(key string) string {
+	if l, ok := usageWindowLabel[key]; ok {
+		return l
+	}
+	return key
+}
 
 // usageProviderColor mirrors coach's PROV_COLOR (claude=yellow, codex=cyan,
 // antigravity=magenta) so mat's usage view reads the same as coach itself.
@@ -422,8 +436,8 @@ func renderProvider(label string, p coach.Provider, present bool, textWidth int)
 			continue
 		}
 		b.WriteString("\n  ")
-		b.WriteString(fmt.Sprintf("%-3s %s %3d%%  · 리셋 %s",
-			wk, usageBar(w.LeftPct, 10, providerColor(label)), w.LeftPct, humanizeReset(w.ResetMin)))
+		b.WriteString(fmt.Sprintf("%-5s %s %3d%%  · 리셋 %s",
+			windowLabel(wk), usageBar(w.LeftPct, 10, providerColor(label)), w.LeftPct, humanizeReset(w.ResetMin)))
 	}
 
 	if p.Reason != "" {
