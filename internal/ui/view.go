@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -304,14 +305,15 @@ func footerHelp() string {
 // independent of Go's random map iteration.
 var usageProviderOrder = []string{"claude", "codex", "antigravity"}
 
-// usageWindowOrder fixes the order of windows within a provider. Providers
-// that omit a window (antigravity has no 5h; fable_7d only exists on Max
-// plans) simply skip it.
-var usageWindowOrder = []string{"5h", "7d", "fable_7d"}
+// usageWindowOrder fixes the order of coach's canonical windows within a
+// provider. Providers that omit a window simply skip it. Keys NOT in this
+// list (e.g. antigravity's per-account rows, keyed by email local-part)
+// are rendered after these, sorted by remaining% desc.
+var usageWindowOrder = []string{"5h", "7d", "daily", "gemini", "fable_7d"}
 
 // usageWindowLabel maps a coach window key to its display label, mirroring
-// coach's own rendering of the Fable 5 weekly window.
-var usageWindowLabel = map[string]string{"fable_7d": "Fable"}
+// coach's own rendering.
+var usageWindowLabel = map[string]string{"fable_7d": "Fable", "gemini": "Gemini", "daily": "일일"}
 
 // windowLabel returns the display label for a window key, falling back to
 // the raw key for windows coach may add later.
@@ -412,7 +414,15 @@ func renderProvider(label string, p coach.Provider, present bool, textWidth int)
 
 	dot := lipgloss.NewStyle().Foreground(levelColor(p.Level)).Render("●")
 	name := lipgloss.NewStyle().Bold(true).Foreground(providerColor(label)).Render(label)
-	b.WriteString(fmt.Sprintf("%s %s  %s", dot, name, mutedStyle.Render(p.Plan)))
+	meta := p.Plan
+	if p.Email != "" {
+		if meta != "" {
+			meta = p.Email + " · " + meta
+		} else {
+			meta = p.Email
+		}
+	}
+	b.WriteString(fmt.Sprintf("%s %s  %s", dot, name, mutedStyle.Render(meta)))
 
 	if !p.Ok {
 		b.WriteString("\n  ")
@@ -430,14 +440,48 @@ func renderProvider(label string, p coach.Provider, present bool, textWidth int)
 			Render(truncate(p.Action, textWidth-2)))
 	}
 
+	// canonical windows first, then extra keys (antigravity account rows)
+	// sorted by remaining% desc — mirrors coach's best-first ordering.
+	keys := make([]string, 0, len(p.Windows))
+	shown := map[string]bool{}
 	for _, wk := range usageWindowOrder {
-		w, has := p.Windows[wk]
-		if !has {
-			continue
+		if _, has := p.Windows[wk]; has {
+			keys = append(keys, wk)
+			shown[wk] = true
+		}
+	}
+	extras := make([]string, 0, len(p.Windows))
+	for k := range p.Windows {
+		if !shown[k] {
+			extras = append(extras, k)
+		}
+	}
+	sort.Slice(extras, func(i, j int) bool {
+		wi, wj := p.Windows[extras[i]], p.Windows[extras[j]]
+		if wi.LeftPct != wj.LeftPct {
+			return wi.LeftPct > wj.LeftPct
+		}
+		return extras[i] < extras[j]
+	})
+	keys = append(keys, extras...)
+
+	labelW := 5
+	for _, wk := range keys {
+		if n := lipgloss.Width(windowLabel(wk)); n > labelW {
+			labelW = n
+		}
+	}
+	for _, wk := range keys {
+		w := p.Windows[wk]
+		lbl := windowLabel(wk)
+		pad := strings.Repeat(" ", labelW-lipgloss.Width(lbl))
+		reset := ""
+		if w.ResetMin != nil {
+			reset = "  · 리셋 " + humanizeReset(*w.ResetMin)
 		}
 		b.WriteString("\n  ")
-		b.WriteString(fmt.Sprintf("%-5s %s %3d%%  · 리셋 %s",
-			windowLabel(wk), usageBar(w.LeftPct, 10, providerColor(label)), w.LeftPct, humanizeReset(w.ResetMin)))
+		b.WriteString(fmt.Sprintf("%s%s %s %3d%%%s",
+			lbl, pad, usageBar(w.LeftPct, 10, providerColor(label)), w.LeftPct, reset))
 	}
 
 	if p.Reason != "" {

@@ -27,9 +27,10 @@ const tickInterval = 2 * time.Second
 
 // usageTickInterval is the auto-refresh period for the usage view. It is
 // far slower than the main view's 2s because `coach --json` queries three
-// providers sequentially via codexbar and is slow; 30s matches `coach
-// --watch`'s own default. Polling only runs while the usage view is open.
-const usageTickInterval = 30 * time.Second
+// providers sequentially via codexbar (antigravity now enumerates every
+// registered account) and takes 45s~1min in practice. Polling only runs
+// while the usage view is open, and overlapping fetches are guarded.
+const usageTickInterval = 60 * time.Second
 
 // Model is the bubbletea root model.
 type Model struct {
@@ -113,7 +114,10 @@ func tickCmd() tea.Cmd {
 // codexbar churns. The result arrives as a usageLoadedMsg.
 func fetchUsageCmd() tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// coach --json takes 45s~1min (codexbar sequential + antigravity
+		// all-accounts) — 2min bounds a stuck codexbar without killing
+		// normal fetches.
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		snap, err := coach.Fetch(ctx)
 		return usageLoadedMsg{snap: snap, err: err}

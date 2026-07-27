@@ -108,6 +108,10 @@ func TestRenderArtifacts(t *testing.T) {
 	}
 }
 
+// iptr is a test helper for coach.Window.ResetMin (*int since coach emits
+// null when no reset is pending).
+func iptr(v int) *int { return &v }
+
 // coach reports the Fable 5 weekly window (fable_7d) only on Max plans;
 // the usage view must show it as a "Fable" row when present and render
 // nothing extra when absent (basic plans).
@@ -115,9 +119,9 @@ func TestRenderProviderFableWindow(t *testing.T) {
 	withFable := coach.Provider{
 		Ok: true, Plan: "Claude Max 5x", Level: "green",
 		Windows: map[string]coach.Window{
-			"5h":       {LeftPct: 96, ResetMin: 235},
-			"7d":       {LeftPct: 45, ResetMin: 1125},
-			"fable_7d": {LeftPct: 25, ResetMin: 1125},
+			"5h":       {LeftPct: 96, ResetMin: iptr(235)},
+			"7d":       {LeftPct: 45, ResetMin: iptr(1125)},
+			"fable_7d": {LeftPct: 25, ResetMin: iptr(1125)},
 		},
 	}
 	out := renderProvider("claude", withFable, true, 70)
@@ -131,12 +135,41 @@ func TestRenderProviderFableWindow(t *testing.T) {
 	withoutFable := coach.Provider{
 		Ok: true, Plan: "Claude Pro", Level: "green",
 		Windows: map[string]coach.Window{
-			"5h": {LeftPct: 96, ResetMin: 235},
-			"7d": {LeftPct: 45, ResetMin: 1125},
+			"5h": {LeftPct: 96, ResetMin: iptr(235)},
+			"7d": {LeftPct: 45, ResetMin: iptr(1125)},
 		},
 	}
 	out = renderProvider("claude", withoutFable, true, 70)
 	if strings.Contains(out, "Fable") || strings.Contains(out, "fable") {
 		t.Errorf("no fable_7d window but Fable row rendered:\n%s", out)
+	}
+}
+
+// antigravity reports one row per account (keys = email local-part, not in
+// usageWindowOrder). They must all render, best-remaining first, with the
+// coaching account's email in the header and no reset suffix when coach
+// sent null (window fully available).
+func TestRenderProviderAntigravityAccountRows(t *testing.T) {
+	p := coach.Provider{
+		Ok: true, Email: "aitipking@gmail.com", Level: "green",
+		Action: "큰 작업 돌려도 돼요",
+		Windows: map[string]coach.Window{
+			"knowhackking": {LeftPct: 51, ResetMin: iptr(3490)},
+			"aitipking":    {LeftPct: 100},
+		},
+	}
+	out := renderProvider("antigravity", p, true, 70)
+	ia, ik := strings.Index(out, "aitipking"), strings.Index(out, "knowhackking")
+	if ia == -1 || ik == -1 {
+		t.Fatalf("account rows missing:\n%s", out)
+	}
+	if ia > ik {
+		t.Errorf("best-remaining account should render first:\n%s", out)
+	}
+	if !strings.Contains(out, "aitipking@gmail.com") {
+		t.Errorf("recommended account email missing from header:\n%s", out)
+	}
+	if strings.Count(out, "리셋") != 1 {
+		t.Errorf("null ResetMin must omit the reset suffix (want exactly 1 리셋):\n%s", out)
 	}
 }

@@ -24,18 +24,23 @@ import (
 var ErrNotInstalled = errors.New("coach not installed")
 
 // Window is one rolling usage window (e.g. "5h", "7d"). Fields mirror the
-// `coach --json` schema exactly.
+// `coach --json` schema exactly. ResetMin is a pointer because coach emits
+// null when no reset is pending (window fully available) — distinct from 0
+// ("resets imminently").
 type Window struct {
-	LeftPct  int `json:"left_pct"`
-	ResetMin int `json:"reset_min"`
+	LeftPct  int  `json:"left_pct"`
+	ResetMin *int `json:"reset_min"`
 }
 
 // Provider is one usage provider (claude / codex / antigravity). Windows
-// is a map because not every provider reports every window — antigravity,
-// for instance, only reports "7d".
+// is a map because not every provider reports every window — antigravity
+// reports one row per account (keyed by email local-part) since coach's
+// all-accounts upgrade. Email is the account behind the coaching verdict
+// (for antigravity: the recommended, most-available account).
 type Provider struct {
 	Ok      bool              `json:"ok"`
 	Plan    string            `json:"plan"`
+	Email   string            `json:"email"`
 	Level   string            `json:"level"`
 	Action  string            `json:"action"`
 	Reason  string            `json:"reason"`
